@@ -2080,11 +2080,10 @@ contract Staking is Ownable {
     FLIPER fliper;
 
 
-    // maps tokenId to stake
-    mapping(uint256 => Stake) public stakes;
+    // maps address to stake
+    mapping(address => Stake[]) public stakes;
 
-    uint256 public constant DAILY_FLIPER_RATE = 10000 ether;
-    uint256 public constant MINIMUM_TO_EXIT = 60 minutes;
+    uint256 public constant MINIMUM_TO_EXIT = 1 hours;
     // there will only ever be (roughly) 1 billion $FLIPER earned through staking
     uint256 public constant MAXIMUM_GLOBAL_FLIPER = 1000000000 ether;
 
@@ -2095,6 +2094,10 @@ contract Staking is Ownable {
     // the last time $FLIPER was claimed
     uint256 public lastClaimTimestamp;
 
+    uint256 public hourly_fliper_rate = 100 ether;
+
+    mapping(address => uint256) public lastClaimAmount;
+
     /**
     * @param _fliperpass reference to the Woolf NFT contract
     * @param _fliper reference to the $WOOL token
@@ -2104,25 +2107,32 @@ contract Staking is Ownable {
         fliper = FLIPER(_fliper);
     }
 
+
+    function setFliperRate(uint256 _rate) public onlyOwner {
+        hourly_fliper_rate = _rate;
+    }
     /** STAKING */
 
     /**
-    * @param tokenId the ID of the NFT to stake
+    * @param tokenIds the IDs of the NFT to stake
     */
-    function staking(uint256 tokenId) external {
-        require(fliperpass.ownerOf(tokenId) == _msgSender(), "AINT YO TOKEN");
-        fliperpass.transferFrom(_msgSender(), address(this), tokenId);
+    function staking(uint16[] calldata tokenIds) external {
+        for (uint i = 0; i < tokenIds.length; i++) {
+            uint256 tokenId = tokenIds[i];
+            require(fliperpass.ownerOf(tokenId) == _msgSender(), "AINT YO TOKEN");
+            fliperpass.transferFrom(_msgSender(), address(this), tokenId);
 
-        stakes[tokenId] = Stake({
-            owner: _msgSender(),
-            tokenId: uint16(tokenId),
-            value: uint80(block.timestamp)
-        });
+            stakes[_msgSender()].push(Stake({
+                owner: _msgSender(),
+                tokenId: uint16(tokenId),
+                value: uint80(block.timestamp)
+            }));
 
-        totalNFTStaked += 1;
-        emit TokenStaked(_msgSender(), tokenId, block.timestamp);
+            totalNFTStaked += 1;
+            emit TokenStaked(_msgSender(), tokenId, block.timestamp);
 
-        fliperpass.setOwnerToken(_msgSender(), tokenId, true);
+            fliperpass.setOwnerToken(_msgSender(), tokenId, true);
+        }
     }
 
     /** CLAIMING / UNSTAKING */
@@ -2130,31 +2140,48 @@ contract Staking is Ownable {
     /**
     * realize $WOOL earnings and optionally unstake tokens from the Barn / Pack
     * to unstake a Sheep it will require it has 2 days worth of $WOOL unclaimed
-    * @param tokenId the IDs of the tokens to claim earnings from
+    * @param tokenIds the IDs of the tokens to claim earnings from
     */
-    function claim(uint256 tokenId) external {
+    function claim(uint16[] calldata tokenIds) external {
         uint256 owed = 0;
-        Stake memory stake = stakes[tokenId];
-        require(stake.owner == _msgSender(), "SWIPER, NO SWIPING");
-        require(block.timestamp - stake.value >= MINIMUM_TO_EXIT, "MINIMUM TIME IS ONE HOUR");
-        if (totalFliperEarned < MAXIMUM_GLOBAL_FLIPER) {
-            owed = (block.timestamp - stake.value) * DAILY_FLIPER_RATE / 1 days;
-            totalFliperEarned += 
-                (block.timestamp - lastClaimTimestamp)
-                * totalNFTStaked
-                * DAILY_FLIPER_RATE / 1 days; 
-            lastClaimTimestamp = block.timestamp;
-        } else {
-            owed = (lastClaimTimestamp - stake.value) * DAILY_FLIPER_RATE / 1 days;
+        Stake[] memory ownStakes = stakes[_msgSender()];
+        for (uint y = 0; y < tokenIds.length; y++) {
+            uint256 tokenId = tokenIds[y];
+            for (uint256 i = 0; i < ownStakes.length; i++) {
+                Stake memory stake = ownStakes[i];
+                if (stake.tokenId == tokenId) {
+                    require(block.timestamp - stake.value >= MINIMUM_TO_EXIT, "MINIMUM TIME IS ONE HOUR");
+                    if (totalFliperEarned < MAXIMUM_GLOBAL_FLIPER) {
+                        owed = (block.timestamp - stake.value) * hourly_fliper_rate / 1 hours;
+                        lastClaimTimestamp = block.timestamp;
+                        totalFliperEarned += owed;
+                    } else {
+                        owed = 0;
+                    }
+
+                    delete ownStakes[i];
+                }
+            }
+
+            fliperpass.safeTransferFrom(address(this), _msgSender(), tokenId, ""); // send back NFT to staker
+            totalNFTStaked -= 1;
+            emit TokenClaimed(tokenId, owed, false);
+
+            fliperpass.setOwnerToken(_msgSender(), tokenId, false);
         }
 
-        fliperpass.safeTransferFrom(address(this), _msgSender(), tokenId, ""); // send back NFT to staker
-        delete stakes[tokenId];
-        totalNFTStaked -= 1;
-        emit TokenClaimed(tokenId, owed, false);
+        if (owed > 0) {
+            fliper.mint(_msgSender(), owed);
+        }
 
-        fliperpass.setOwnerToken(_msgSender(), tokenId, false);
-        if (owed == 0) return;
-        fliper.mint(_msgSender(), owed);
+        lastClaimAmount[_msgSender()] = owed;
+    }
+
+    function getOwnStakes(address owner) public view returns (Stake[] memory) {
+        return stakes[owner];
+    }
+
+    function getLastClaimAmount(address owner) public view returns (uint256) {
+        return lastClaimAmount[owner];
     }
 }
