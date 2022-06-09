@@ -1400,7 +1400,7 @@ contract FliperPass is ERC721Enumerable, Ownable {
         require(ts <= totalCount, "max supply reached!");
 
         ownerTokens[_msgSender()].push(Wallet(ts, false));
-        _tokenTraits[ts] = Pass("silver", "");
+        _tokenTraits[ts] = Pass("silver", "https://ipfs.io/ipfs/QmUzGykK9mccmZJzvZhmPay7Y426LjMLCxP2DdibvrL6AJ");
         _safeMint(_msgSender(), ts);
     }
 
