@@ -18,6 +18,7 @@ async function main() {
     console.log("Staking Contract deployed to:", staking.address);
 
     await fliper_pass.setStakingAddress(staking.address);
+    await fliper_pass.setSilverPath("https://ipfs.io/ipfs/QmUzGykK9mccmZJzvZhmPay7Y426LjMLCxP2DdibvrL6AJ");
 
     await fliper.addController(staking.address);
 }

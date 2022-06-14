@@ -1312,18 +1312,24 @@ pragma solidity ^0.8.0;
 contract FliperPass is ERC721Enumerable, Ownable {
     //supply counters
     uint64 public totalCount = 1000;
+
+    //LEVEL = ["silver", "Gold", "Platinum"];
+    string public silverImage;
+    string public goldImage;
+    string public platinumImage;
+
+
     struct Pass {
         string level;
         string imagePath;
     }
-
     mapping (uint256 => Pass) public _tokenTraits;
 
     struct Wallet {
         uint256 tokenId;
         bool isStaked;
     }
-    mapping(address => Wallet[]) public ownerTokens;
+    mapping(address => Wallet) public ownerTokens;
 
     address[] private whiteList;
 
@@ -1369,6 +1375,15 @@ contract FliperPass is ERC721Enumerable, Ownable {
         }
     }
 
+    function isWhiteListForMint(address _address) public view returns (bool) {
+        for (uint i=0; i<whiteListLength(); i++) {
+            if (whiteList[i] == _address) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function setMaxNftSupply(uint64 maxNftSupply) public onlyOwner {
         totalCount = maxNftSupply;
     }
@@ -1396,11 +1411,12 @@ contract FliperPass is ERC721Enumerable, Ownable {
     }
 
     function mint() public onlyWhiteList {
+        require(balanceOf(_msgSender()) == 0, "you already own a token");
         uint256 ts = totalSupply() + 1;
         require(ts <= totalCount, "max supply reached!");
 
-        ownerTokens[_msgSender()].push(Wallet(ts, false));
-        _tokenTraits[ts] = Pass("silver", "https://ipfs.io/ipfs/QmUzGykK9mccmZJzvZhmPay7Y426LjMLCxP2DdibvrL6AJ");
+        ownerTokens[_msgSender()] = Wallet(ts, false);
+        _tokenTraits[ts] = Pass("silver", silverImage);
         _safeMint(_msgSender(), ts);
     }
 
@@ -1410,50 +1426,59 @@ contract FliperPass is ERC721Enumerable, Ownable {
         uint256 tokenId
     ) public virtual override {
         if (_msgSender() != address(staking_address)) {
-            removeOwnerToken(from, tokenId);
+            removeOwnerToken(from);
             require(_isApprovedOrOwner(_msgSender(), tokenId), "ERC721: transfer caller is not owner nor approved");
         }
 
         _transfer(from, to, tokenId);
     }
 
-    function setOwnerToken(address owner, uint256 tokenId, bool stake) public {
+    function setOwnerToken(address owner, bool stake) public {
         require(owner == _msgSender() || _msgSender() == staking_address, "DONT GIVE YOUR TOKENS AWAY");
-        Wallet[] storage tokens = ownerTokens[owner];
-        for (uint i=0; i<tokens.length; i++) {
-            if (tokens[i].tokenId == tokenId) {
-                tokens[i].isStaked = stake;
-                break;
-            }
-        }
+        Wallet storage token = ownerTokens[owner];
+        token.isStaked = stake;
     }
 
-    function removeOwnerToken(address owner, uint256 tokenId) private {
+    function removeOwnerToken(address owner) private {
         require(owner == _msgSender() || _msgSender() == staking_address, "DONT GIVE YOUR TOKENS AWAY");
-        Wallet[] memory tokens = ownerTokens[owner];
         delete ownerTokens[owner];
-
-        for (uint i=0; i<tokens.length; i++) {
-            if (tokens[i].tokenId != tokenId) {
-                ownerTokens[owner].push(tokens[i]);
-            }
-        }
     }
 
     function isOwnedToken(address owner) public view returns (bool) {
-        Wallet[] storage tokens = ownerTokens[owner];
-        if (tokens.length > 0) {
+        Wallet memory token = ownerTokens[owner];
+        if (token.tokenId != 0) {
             return true;
         }
         return false;
     }
 
-    function getOwnerTokens(address _address) public view returns (Wallet[] memory) {
+    function getOwnerToken(address _address) public view returns (Wallet memory) {
         return ownerTokens[_address];
     }
 
     function setStakingAddress(address _stakingAddress) public onlyOwner {
         staking_address = _stakingAddress;
+    }
+
+    function setTokenLevel(uint256 tokenId, string memory level) public onlyOwner {
+        require(tokenId > 0, "tokenId must be greater than 0");
+        require(keccak256(abi.encodePacked(level)) == keccak256(abi.encodePacked("silver")) || keccak256(abi.encodePacked(level)) == keccak256(abi.encodePacked("gold")) || keccak256(abi.encodePacked(level)) == keccak256(abi.encodePacked("platinum")), "level must be silver, gold or platinum");
+        Pass memory pass = _tokenTraits[tokenId];
+        pass.level = level;
+        pass.imagePath = keccak256(abi.encodePacked(level)) == keccak256(abi.encodePacked("silver")) ? silverImage : keccak256(abi.encodePacked(level)) == keccak256(abi.encodePacked("gold")) ? goldImage : platinumImage;
+        _tokenTraits[tokenId] = pass;
+    }
+
+    function setSilverPath(string memory path) public onlyOwner {
+        silverImage = path;
+    }
+
+    function setGoldPath(string memory path) public onlyOwner {
+        goldImage = path;
+    }
+
+    function setPlatinumPath(string memory path) public onlyOwner {
+        platinumImage = path;
     }
 
     string internal constant TABLE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -2072,7 +2097,7 @@ contract Staking is Ownable {
     }
 
     event TokenStaked(address owner, uint256 tokenId, uint256 value);
-    event TokenClaimed(uint256 tokenId, uint256 earned, bool unstaked);
+    event TokenClaimed(uint256 tokenId, bool unstaked);
 
     // reference to the FliperPass NFT contract
     FliperPass public fliperpass;
@@ -2081,22 +2106,12 @@ contract Staking is Ownable {
 
 
     // maps address to stake
-    mapping(address => Stake[]) public stakes;
+    mapping(address => Stake) public stakes;
 
     uint256 public constant MINIMUM_TO_EXIT = 1 hours;
-    // there will only ever be (roughly) 1 billion $FLIPER earned through staking
-    uint256 public constant MAXIMUM_GLOBAL_FLIPER = 1000000000 ether;
 
-    // amount of $FLIPER earned so far
-    uint256 public totalFliperEarned;
     // number of Sheep staked in the Barn
     uint256 public totalNFTStaked;
-    // the last time $FLIPER was claimed
-    uint256 public lastClaimTimestamp;
-
-    uint256 public hourly_fliper_rate = 100 ether;
-
-    mapping(address => uint256) public lastClaimAmount;
 
     /**
     * @param _fliperpass reference to the Woolf NFT contract
@@ -2107,32 +2122,25 @@ contract Staking is Ownable {
         fliper = FLIPER(_fliper);
     }
 
-
-    function setFliperRate(uint256 _rate) public onlyOwner {
-        hourly_fliper_rate = _rate;
-    }
     /** STAKING */
 
     /**
-    * @param tokenIds the IDs of the NFT to stake
+    * @param tokenId the IDs of the NFT to stake
     */
-    function staking(uint16[] calldata tokenIds) external {
-        for (uint i = 0; i < tokenIds.length; i++) {
-            uint256 tokenId = tokenIds[i];
-            require(fliperpass.ownerOf(tokenId) == _msgSender(), "AINT YO TOKEN");
-            fliperpass.transferFrom(_msgSender(), address(this), tokenId);
+    function staking(uint256 tokenId) external {
+        require(fliperpass.ownerOf(tokenId) == _msgSender(), "AINT YO TOKEN");
+        fliperpass.transferFrom(_msgSender(), address(this), tokenId);
 
-            stakes[_msgSender()].push(Stake({
-                owner: _msgSender(),
-                tokenId: uint16(tokenId),
-                value: uint80(block.timestamp)
-            }));
+        stakes[_msgSender()] = Stake({
+            owner: _msgSender(),
+            tokenId: uint16(tokenId),
+            value: uint80(block.timestamp)
+        });
 
-            totalNFTStaked += 1;
-            emit TokenStaked(_msgSender(), tokenId, block.timestamp);
+        totalNFTStaked += 1;
+        emit TokenStaked(_msgSender(), tokenId, block.timestamp);
 
-            fliperpass.setOwnerToken(_msgSender(), tokenId, true);
-        }
+        fliperpass.setOwnerToken(_msgSender(), true);
     }
 
     /** CLAIMING / UNSTAKING */
@@ -2140,48 +2148,24 @@ contract Staking is Ownable {
     /**
     * realize $WOOL earnings and optionally unstake tokens from the Barn / Pack
     * to unstake a Sheep it will require it has 2 days worth of $WOOL unclaimed
-    * @param tokenIds the IDs of the tokens to claim earnings from
+    * @param tokenId the ID of the tokens to claim earnings from
     */
-    function claim(uint16[] calldata tokenIds) external {
-        uint256 owed = 0;
-        Stake[] memory ownStakes = stakes[_msgSender()];
-        for (uint y = 0; y < tokenIds.length; y++) {
-            uint256 tokenId = tokenIds[y];
-            for (uint256 i = 0; i < ownStakes.length; i++) {
-                Stake memory stake = ownStakes[i];
-                if (stake.tokenId == tokenId) {
-                    require(block.timestamp - stake.value >= MINIMUM_TO_EXIT, "MINIMUM TIME IS ONE HOUR");
-                    if (totalFliperEarned < MAXIMUM_GLOBAL_FLIPER) {
-                        owed = (block.timestamp - stake.value) * hourly_fliper_rate / 1 hours;
-                        lastClaimTimestamp = block.timestamp;
-                        totalFliperEarned += owed;
-                    } else {
-                        owed = 0;
-                    }
+    function claim(uint256 tokenId) external {
+        Stake memory ownStake = stakes[_msgSender()];
+        if (ownStake.tokenId == tokenId) {
+            require(block.timestamp - ownStake.value >= MINIMUM_TO_EXIT, "MINIMUM TIME IS ONE HOUR");
 
-                    delete ownStakes[i];
-                }
-            }
-
-            fliperpass.safeTransferFrom(address(this), _msgSender(), tokenId, ""); // send back NFT to staker
-            totalNFTStaked -= 1;
-            emit TokenClaimed(tokenId, owed, false);
-
-            fliperpass.setOwnerToken(_msgSender(), tokenId, false);
+            delete stakes[_msgSender()];
         }
 
-        if (owed > 0) {
-            fliper.mint(_msgSender(), owed);
-        }
+        fliperpass.safeTransferFrom(address(this), _msgSender(), tokenId, ""); // send back NFT to staker
+        totalNFTStaked -= 1;
+        emit TokenClaimed(tokenId, false);
 
-        lastClaimAmount[_msgSender()] = owed;
+        fliperpass.setOwnerToken(_msgSender(), false);
     }
 
-    function getOwnStakes(address owner) public view returns (Stake[] memory) {
+    function getOwnStakes(address owner) public view returns (Stake memory) {
         return stakes[owner];
-    }
-
-    function getLastClaimAmount(address owner) public view returns (uint256) {
-        return lastClaimAmount[owner];
     }
 }
